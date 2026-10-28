@@ -2,6 +2,9 @@ const crypto = require('crypto');
 const admin = require('firebase-admin');
 if (!admin.apps.length) admin.initializeApp({ credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)) });
 module.exports = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  if (req.method === 'OPTIONS') return res.status(200).end();
   try {
     const idToken = (req.headers.authorization || '').replace('Bearer ', '');
     const { uid } = await admin.auth().verifyIdToken(idToken);
