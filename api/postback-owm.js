@@ -15,7 +15,6 @@ const db = admin.firestore();
 module.exports = async (req, res) => {
   try {
     // 1. Lấy dữ liệu từ URL (vì Offerwall.me đang gửi qua GET)
-    // Lưu ý: Tên biến phải khớp với trên Offerwall.me (?user_id=...&amount=...)
     const userId = req.query.user_id; 
     const reward = req.query.amount;
     const status = req.query.status;
@@ -25,30 +24,26 @@ module.exports = async (req, res) => {
       return res.status(400).send('Thiếu tham số user_id hoặc amount');
     }
 
-    // 3. Tính toán số điểm (Chuyển đổi từ amount sang điểm)
-    // Tùy thuộc vào Offerwall trả về tiền ($) hay điểm, bạn có thể nhân với hệ số.
-    // Ví dụ: amount là 1.23 thì điểm là 1230. Nếu amount đã là điểm rồi thì cứ để nguyên.
+    // 3. Tính toán số điểm (Nếu reward là tiền $ thì nhân lên, ở đây giữ nguyên theo số lượng gửi sang)
     const pointsToAdd = Math.abs(Number(reward) || 0); 
 
     if (pointsToAdd <= 0) {
       return res.status(400).send('Số điểm không hợp lệ');
     }
 
-    // 4. Tạo mã giao dịch (transId) để tránh cộng điểm trùng lặp
-    // Vì Offerwall.me không gửi transId, ta tự tạo từ userId + số điểm + thời gian
+    // 4. Tạo mã giao dịch để tránh cộng điểm trùng lặp
     const transId = `owm_${userId}_${pointsToAdd}_${Date.now()}`;
     const txRef = db.collection('postbacks').doc(transId);
 
     // 5. Cập nhật điểm vào Firestore
-    // (Đảm bảo collection 'users' và trường 'points' tồn tại trong Firestore của bạn)
     const userRef = db.collection('users').doc(userId);
     
-    // Cộng điểm
-    await userRef.update({ 
+    // ĐÃ SỬA: Dùng .set với { merge: true } để tự động tạo user nếu chưa có (tránh lỗi 500)
+    await userRef.set({ 
       points: admin.firestore.FieldValue.increment(pointsToAdd) 
-    });
+    }, { merge: true });
 
-    // Lưu lại lịch sử
+    // Lưu lại lịch sử giao dịch
     await txRef.set({ 
       userId, 
       pointsAdded: pointsToAdd, 
