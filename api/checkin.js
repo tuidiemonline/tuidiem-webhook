@@ -31,6 +31,7 @@ export default async function handler(req, res) {
 
     const userRef = db.collection('users').doc(uid);
 
+    // ĐÃ SỬA: await runTransaction và await t.set
     const kq = await db.runTransaction(async (t) => {
       const userDoc = await t.get(userRef);
       const now = Date.now();
@@ -51,7 +52,9 @@ export default async function handler(req, res) {
         todayKey: today,
         lastCheckin: now,
       };
-      t.set(userRef, moi, { merge: true });
+      
+      // ĐÃ SỬA: thêm await
+      await t.set(userRef, moi, { merge: true });
       return moi;
     });
 
