@@ -13,18 +13,18 @@ export default async function handler(req, res) {
   try {
     const q = { ...req.query, ...(req.body || {}) };
 
-    // 1. Phải có secret đúng (đặt OWM_SECRET trong Vercel env)
-    if (!q.secret || q.secret !== process.env.OWM_SECRET) {
+    // 1. Phải có secret đúng (env tên OWM_SECRET_KEY)
+    if (!q.secret || q.secret !== process.env.OWM_SECRET_KEY) {
       return res.status(403).json({ error: 'Sai secret' });
     }
 
-    // 2. Lấy dữ liệu đối tác gửi (đổi tên biến theo đúng doc OWM nếu khác)
+    // 2. Lấy dữ liệu đối tác OWM gửi lên
     const uid = String(q.subid || q.sub_id || q.uid || '');
     const points = Math.floor(Number(q.points || q.amount || q.reward || 0));
     const txid = String(q.transaction_id || q.txid || q.id || '');
     if (!uid || points <= 0) return res.status(400).json({ error: 'Thiếu tham số' });
 
-    // 3. Cộng điểm — mỗi giao dịch chỉ cộng 1 lần
+    // 3. Cộng điểm — mỗi giao dịch chỉ cộng 1 lần (chống gọi lại)
     await db.runTransaction(async (t) => {
       if (txid) {
         const txRef = db.collection('postbacks').doc(txid);
