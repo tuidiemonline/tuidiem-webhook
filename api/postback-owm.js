@@ -1,61 +1,45 @@
-const admin = require('firebase-admin');
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
-// Khởi tạo Firebase Admin
-if (!admin.apps.length) {
+if (!getApps().length) {
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  initializeApp({ credential: cert(serviceAccount) });
+}
+const db = getFirestore();
+
+export default async function handler(req, res) {
+  if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).send('Method Not Allowed');
+
   try {
-    admin.initializeApp({ 
-      credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)) 
+    const q = { ...req.query, ...(req.body || {}) };
+
+    // 1. Phải có secret đúng (đặt OWM_SECRET trong Vercel env)
+    if (!q.secret || q.secret !== process.env.OWM_SECRET) {
+      return res.status(403).json({ error: 'Sai secret' });
+    }
+
+    // 2. Lấy dữ liệu đối tác gửi (đổi tên biến theo đúng doc OWM nếu khác)
+    const uid = String(q.subid || q.sub_id || q.uid || '');
+    const points = Math.floor(Number(q.points || q.amount || q.reward || 0));
+    const txid = String(q.transaction_id || q.txid || q.id || '');
+    if (!uid || points <= 0) return res.status(400).json({ error: 'Thiếu tham số' });
+
+    // 3. Cộng điểm — mỗi giao dịch chỉ cộng 1 lần
+    await db.runTransaction(async (t) => {
+      if (txid) {
+        const txRef = db.collection('postbacks').doc(txid);
+        const txDoc = await t.get(txRef);
+        if (txDoc.exists) throw new Error('DA_CONG');
+        t.set(txRef, { uid, points, createdAt: new Date().toISOString() });
+      }
+      const userRef = db.collection('users').doc(uid);
+      t.set(userRef, { points: FieldValue.increment(points) }, { merge: true });
     });
+
+    return res.status(200).send('OK');
   } catch (error) {
-    console.error('Lỗi cấu hình Firebase:', error);
+    if (error.message === 'DA_CONG') return res.status(200).send('OK');
+    console.error('Lỗi postback:', error);
+    return res.status(400).json({ error: error.message });
   }
 }
-const db = admin.firestore();
-
-module.exports = async (req, res) => {
-  try {
-    // 1. Lấy dữ liệu từ URL (vì Offerwall.me đang gửi qua GET)
-    const userId = req.query.user_id; 
-    const reward = req.query.amount;
-    const status = req.query.status;
-
-    // 2. Kiểm tra dữ liệu hợp lệ
-    if (!userId || !reward) {
-      return res.status(400).send('Thiếu tham số user_id hoặc amount');
-    }
-
-    // 3. Tính toán số điểm (Nếu reward là tiền $ thì nhân lên, ở đây giữ nguyên theo số lượng gửi sang)
-    const pointsToAdd = Math.abs(Number(reward) || 0); 
-
-    if (pointsToAdd <= 0) {
-      return res.status(400).send('Số điểm không hợp lệ');
-    }
-
-    // 4. Tạo mã giao dịch để tránh cộng điểm trùng lặp
-    const transId = `owm_${userId}_${pointsToAdd}_${Date.now()}`;
-    const txRef = db.collection('postbacks').doc(transId);
-
-    // 5. Cập nhật điểm vào Firestore
-    const userRef = db.collection('users').doc(userId);
-    
-    // ĐÃ SỬA: Dùng .set với { merge: true } để tự động tạo user nếu chưa có (tránh lỗi 500)
-    await userRef.set({ 
-      points: admin.firestore.FieldValue.increment(pointsToAdd) 
-    }, { merge: true });
-
-    // Lưu lại lịch sử giao dịch
-    await txRef.set({ 
-      userId, 
-      pointsAdded: pointsToAdd, 
-      status: status || '1', 
-      createdAt: admin.firestore.FieldValue.serverTimestamp() 
-    });
-
-    // 6. Trả về thành công cho Offerwall.me
-    return res.status(200).send('ok');
-
-  } catch (error) {
-    console.error("Lỗi xử lý postback:", error);
-    return res.status(500).send("Lỗi Server");
-  }
-};
