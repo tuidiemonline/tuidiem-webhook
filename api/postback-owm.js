@@ -10,10 +10,20 @@ const db = getFirestore();
 const APPROVED = ['1', 'approved', 'complete', 'completed', 'valid', 'success'];
 
 export default async function handler(req, res) {
+  // ✅ THÊM: cho phép web tuidiemonline.github.io gọi cross-origin
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).send('Method Not Allowed');
 
   try {
-    const q = { ...req.query, ...(req.body || {}) };
+    // ✅ THÊM: phòng Vercel trả req.body dạng chuỗi JSON
+    let body = req.body || {};
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch (e) { body = {}; }
+    }
+    const q = { ...req.query, ...body };
 
     // 1. Secret bắt buộc
     if (!q.secret || q.secret !== process.env.OWM_SECRET_KEY) {
