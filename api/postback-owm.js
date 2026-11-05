@@ -1,4 +1,5 @@
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
 if (!getApps().length) {
@@ -6,11 +7,12 @@ if (!getApps().length) {
   initializeApp({ credential: cert(serviceAccount) });
 }
 const db = getFirestore();
+const authAdmin = getAuth();
 
 const APPROVED = ['1', 'approved', 'complete', 'completed', 'valid', 'success'];
 
 export default async function handler(req, res) {
-  // ✅ THÊM: cho phép web tuidiemonline.github.io gọi cross-origin
+  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -18,38 +20,56 @@ export default async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).send('Method Not Allowed');
 
   try {
-    // ✅ THÊM: phòng Vercel trả req.body dạng chuỗi JSON
+    // 1. Xác thực Firebase ID Token
+    const authHeader = req.headers.authorization || '';
+    const idToken = authHeader.replace('Bearer ', '');
+    if (!idToken) {
+      return res.status(401).json({ error: 'Thiếu token xác thực' });
+    }
+
+    let decoded;
+    try {
+      decoded = await authAdmin.verifyIdToken(idToken);
+    } catch (err) {
+      return res.status(401).json({ error: 'Token không hợp lệ hoặc đã hết hạn' });
+    }
+
+    const realUid = decoded.uid; // UID thật từ Google – không thể giả mạo
+
+    // 2. Parse body
     let body = req.body || {};
     if (typeof body === 'string') {
       try { body = JSON.parse(body); } catch (e) { body = {}; }
     }
     const q = { ...req.query, ...body };
 
-    // 1. Secret bắt buộc
-    if (!q.secret || q.secret !== process.env.OWM_SECRET_KEY) {
-      return res.status(403).json({ error: 'Sai secret' });
-    }
-
-    // 2. OWM dùng user_id / amount / status
-    const uid = String(q.user_id || q.subid || q.sub_id || q.uid || '');
+    // 3. Lấy thông tin – KHÔNG dùng secret, KHÔNG dùng uid từ body
     const points = Math.floor(Number(q.amount || q.points || q.reward || 0));
     const txid = String(q.transaction_id || q.txid || q.id || '');
     const status = q.status !== undefined ? String(q.status).toLowerCase() : '';
 
-    if (!uid || points <= 0) return res.status(400).json({ error: 'Thiếu tham số' });
+    if (points <= 0) {
+      return res.status(400).json({ error: 'Thiếu hoặc sai số điểm' });
+    }
 
-    // 3. Chỉ cộng khi task được duyệt (status approved); trả 200 để OWM không retry
-    if (status && !APPROVED.includes(status)) return res.status(200).send('OK');
+    // 4. Nếu trạng thái không phải approved thì bỏ qua (trả 200 để OWM không retry)
+    if (status && !APPROVED.includes(status)) {
+      return res.status(200).send('OK');
+    }
 
-    // 4. Cộng điểm, chống trùng giao dịch
+    // 5. Cộng điểm, chống trùng giao dịch
     await db.runTransaction(async (t) => {
       if (txid) {
         const txRef = db.collection('postbacks').doc(txid);
         const txDoc = await t.get(txRef);
         if (txDoc.exists) throw new Error('DA_CONG');
-        t.set(txRef, { uid, points, status, createdAt: new Date().toISOString() });
+        t.set(txRef, { uid: realUid, points, status, createdAt: new Date().toISOString() });
       }
-      t.set(db.collection('users').doc(uid), { points: FieldValue.increment(points) }, { merge: true });
+      t.set(
+        db.collection('users').doc(realUid),
+        { points: FieldValue.increment(points) },
+        { merge: true }
+      );
     });
 
     return res.status(200).send('OK');
