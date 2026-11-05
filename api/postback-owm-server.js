@@ -28,7 +28,7 @@ export default async function handler(req, res) {
 
     // 1. Kiểm tra khóa bí mật (Secret Key) - BẢO MẬT
     const secretKey = String(q.secret || '').trim();
-    if (!secretKey || secretKey !== 'your_secret_key_here') {
+    if (!secretKey || secretKey !== 'Quandeptraiphongdo2298982298@@@99999') {
       log('KHÓA BÍ MẬT KHÔNG HỢP LỆ từ IP ' + (req.headers['x-forwarded-for'] || '?'));
       return res.status(401).json({ error: 'invalid_secret' });
     }
