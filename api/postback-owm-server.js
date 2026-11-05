@@ -26,19 +26,14 @@ export default async function handler(req, res) {
     const status = String(q.status || '').trim();
     const points = Math.round(Number(String(q.amount || '').replace(',', '.')) || 0);
 
-    // === KIỂM TRA CHỮ KÝ ĐÃ TẮT (Offerwall không hỗ trợ sig) ===
-    /*
-    const raw = `${uid}${txid}${q.amount || ''}${status}${secret}`;
-    const expectedSig = crypto.createHash('sha256').update(raw).digest('hex');
-    const actualSig = String(q.sig || q.hash || '').toLowerCase();
-    const validSig = secret && (actualSig === expectedSig || actualSig === expectedSig.slice(0, 16));
-    if (!validSig) {
-      log('CHỮ KÝ KHÔNG HỢP LỆ từ IP ' + (req.headers['x-forwarded-for'] || '?'));
-      return res.status(401).json({ error: 'invalid_signature' });
+    // 1. Kiểm tra khóa bí mật (Secret Key) - BẢO MẬT
+    const secretKey = String(q.secret || '').trim();
+    if (!secretKey || secretKey !== 'your_secret_key_here') {
+      log('KHÓA BÍ MẬT KHÔNG HỢP LỆ từ IP ' + (req.headers['x-forwarded-for'] || '?'));
+      return res.status(401).json({ error: 'invalid_secret' });
     }
-    */
 
-    // 1. Chỉ cộng khi nhiệm vụ được duyệt
+    // 2. Chỉ cộng khi nhiệm vụ được duyệt
     const approved = ['1', 'approved', 'complete', 'completed'];
     if (!approved.includes(status.toLowerCase())) {
       log('Bỏ qua, status = ' + status);
@@ -51,7 +46,7 @@ export default async function handler(req, res) {
 
     const db = admin();
 
-    // 2. Chống cộng 2 lần
+    // 3. Chống cộng 2 lần
     const txRef = db.collection('owm_paid').doc(txid || `notxid_${Date.now()}`);
     const txSnap = await txRef.get();
     if (txSnap.exists) {
@@ -59,7 +54,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ message: 'duplicate' });
     }
 
-    // 3. Kiểm tra user tồn tại
+    // 4. Kiểm tra user tồn tại
     const userRef = db.collection('users').doc(uid);
     const userSnap = await userRef.get();
     if (!userSnap.exists) {
@@ -70,7 +65,7 @@ export default async function handler(req, res) {
     const currentPoints = Number(userSnap.data().points) || 0;
     const now = new Date();
 
-    // 4. Atomic transaction
+    // 5. Atomic transaction
     await db.runTransaction(async t => {
       t.set(txRef, {
         uid,
@@ -100,4 +95,4 @@ export default async function handler(req, res) {
     log('❌ Lỗi: ' + e.message);
     return res.status(500).json({ error: 'internal_error' });
   }
-            }
+}
