@@ -9,9 +9,9 @@ if (!getApps().length) {
 const db = getFirestore();
 const auth = getAuth();
 
-const GAP_MS = 50 * 60 * 1000; // 50 phút (giữ nguyên)
-const POINTS = 1;              // ĐÃ SỬA: 24 → 1 điểm/lần
-const MAX_PER_DAY = 10;        // ĐÃ SỬA: 20 → 10 lần/ngày
+const GAP_MS = 50 * 60 * 1000; // 50 phút giữa 2 lần điểm danh (giữ nguyên)
+const POINTS = 1;              // ĐÃ SỬA: 24 -> 1 điểm / lần
+const MAX_PER_DAY = 10;        // ĐÃ SỬA: 20 -> 10 lần / ngày
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
