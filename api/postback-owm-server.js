@@ -1,48 +1,98 @@
-import crypto from 'crypto';
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 
+// ============ CẤU HÌNH ============
+// Offerwall.me: 1$ = 1500 Điểm (cài ở Currency Configuration)
+// → amount mà Offerwall gửi về CHÍNH LÀ Điểm, không cần nhân chia gì thêm
+// Muốn đổi tỉ lệ: sửa ô EXCHANGE RATE trên Offerwall.me, không sửa code này
+
+function admin() {
+  if (!getApps().length) {
+    initializeApp({ credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)) });
+  }
+  return getFirestore();
+}
+
+// Offerwall.me gọi về: ?user_id=&amount=&status=&transaction_id=&sig=
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.status(200).end();
+  const q = req.query;
+  const secret = process.env.OWM_SECRET_KEY || '';
+  const log = msg => console.log('[owm] ' + msg);
 
   try {
-    const { user_id, amount, status, secret, transaction_id } = req.query;
+    const uid = String(q.user_id || '').trim();
+    const txid = String(q.transaction_id || q.txid || '').trim();
+    const status = String(q.status || '').trim();
+    // amount = số Điểm (đã làm tròn theo EXCHANGE RATE của Offerwall)
+    const points = Math.round(Number(String(q.amount || '').replace(',', '.')) || 0);
 
-    // 1. Kiểm tra Secret Key (phải khớp với biến OWM_SECRET_KEY trên Vercel)
-    if (secret !== process.env.OWM_SECRET_KEY) {
-      return res.status(401).json({ error: 'Invalid secret' });
+    // 1. Xác thực chữ ký: sha256(uid + txid + amount + status + secret)
+    const raw = `${uid}${txid}${q.amount || ''}${status}${secret}`;
+    const h = Buffer.from(
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw))
+    ).toString('hex');
+    const sig = String(q.sig || q.hash || '').toLowerCase();
+    const okSig = secret && (sig === h || sig === h.slice(0, 16));
+
+    // Chỉ bật kiểm tra chữ ký khi có truyền sig.
+    // Nếu Offerwall.me không hỗ trợ biến {sig} → tắt bằng cách xóa 2 dòng dưới
+    if (q.sig !== undefined && !okSig) {
+      log('SAI CHU KY tu IP ' + (req.headers['x-forwarded-for'] || '?'));
+      return res.status(401).send('bad signature');
     }
 
-    // 2. Chỉ cộng điểm khi status = 1 (hoàn thành nhiệm vụ)
-    if (status !== '1') {
-      return res.status(200).json({ message: 'Skipped, status not completed' });
+    // 2. Chỉ cộng khi nhiệm vụ được duyệt (status = 1 / approved / completed)
+    const approved = ['1', 'approved', 'complete', 'completed']
+      .includes(status.toLowerCase());
+    if (!approved) {
+      log('bo qua status=' + status);
+      return res.status(200).send('ignored');
     }
 
-    // 3. Kiểm tra thiếu thông tin
-    if (!user_id || !amount) {
-      return res.status(400).json({ error: 'Missing user_id or amount' });
+    if (!uid || points <= 0) return res.status(400).send('bad params');
+
+    const db = admin();
+
+    // 3. Chống cộng 2 lần: 1 transaction_id chỉ cộng 1 lần
+    const txRef = db.collection('owm_paid').doc(txid || `n_${Date.now()}`);
+    const tx = await txRef.get();
+    if (tx.exists) {
+      log('da cong roi txid=' + txid);
+      return res.status(200).send('already');
     }
 
-    // 4. Cộng điểm cho user vào Firebase
-    const { initializeApp, cert, getApps } = await import('firebase-admin/app');
-    const { getFirestore } = await import('firebase-admin/firestore');
-    
-    if (!getApps().length) {
-      initializeApp({ credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)) });
+    // 4. Phải là user thật (tránh test bắn lung tung tạo user rỗng)
+    const uRef = db.collection('users').doc(uid);
+    const u = await uRef.get();
+    if (!u.exists) {
+      log('user khong ton tai: ' + uid);
+      return res.status(404).send('no user');
     }
-    const db = getFirestore();
 
-    const userRef = db.collection('users').doc(user_id);
-    await userRef.set({
-      points: parseInt(amount)
-    }, { merge: true });
+    const now = new Date();
 
-    console.log(`Credited ${amount} points to user ${user_id}`);
-    return res.status(200).json({ success: true });
+    await db.runTransaction(async t => {
+      // Khoá giao dịch TRƯỚC rồi mới cộng điểm (chống test 2 lần cùng lúc)
+      t.set(txRef, { uid, points, at: now.toISOString() });
+      t.update(uRef, {
+        points: (Number(u.data().points) || 0) + points,
+        history: [
+          {
+            type: 'owm',
+            amount: points,
+            title: 'Nhiệm vụ kiếm điểm',
+            status: 'completed',
+            time: now.toLocaleString('vi-VN')
+          },
+          ...((u.data().history || []).slice(0, 99))
+        ]
+      });
+    });
 
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Server error' });
+    log(`+${points} Điểm cho ${uid} (tx ${txid})`);
+    return res.status(200).send('OK');
+  } catch (e) {
+    log('LOI ' + e.message);
+    return res.status(500).send('error');
   }
 }
